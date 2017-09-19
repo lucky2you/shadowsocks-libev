@@ -1,7 +1,7 @@
 /*
  * acl.c - Manage the ACL (Access Control List)
  *
- * Copyright (C) 2013 - 2016, Max Lv <max.c.lv@gmail.com>
+ * Copyright (C) 2013 - 2017, Max Lv <max.c.lv@gmail.com>
  *
  * This file is part of the shadowsocks-libev.
  *
@@ -20,8 +20,17 @@
  * <http://www.gnu.org/licenses/>.
  */
 
-#include <ipset/ipset.h>
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
+
 #include <ctype.h>
+
+#ifdef USE_SYSTEM_SHARED_LIB
+#include <libcorkipset/ipset.h>
+#else
+#include <ipset/ipset.h>
+#endif
 
 #include "rule.h"
 #include "utils.h"
@@ -48,15 +57,19 @@ static struct cork_dllist outbound_block_list_rules;
 void
 init_block_list()
 {
-    // Initialize cache
     cache_create(&block_list, 256, NULL);
+}
+
+void
+free_block_list()
+{
+    cache_clear(block_list, 0); // Remove all items
 }
 
 int
 remove_from_block_list(char *addr)
 {
     size_t addr_len = strlen(addr);
-
     return cache_remove(block_list, addr, addr_len);
 }
 
@@ -67,7 +80,23 @@ clear_block_list()
 }
 
 int
-check_block_list(char *addr, int err_level)
+check_block_list(char *addr)
+{
+    size_t addr_len = strlen(addr);
+
+    if (cache_key_exist(block_list, addr, addr_len)) {
+        int *count = NULL;
+        cache_lookup(block_list, addr, addr_len, &count);
+
+        if (count != NULL && *count > MAX_TRIES)
+            return 1;
+    }
+
+    return 0;
+}
+
+int
+update_block_list(char *addr, int err_level)
 {
     size_t addr_len = strlen(addr);
 
@@ -79,7 +108,7 @@ check_block_list(char *addr, int err_level)
                 return 1;
             (*count) += err_level;
         }
-    } else {
+    } else if (err_level > 0) {
         int *count = (int *)ss_malloc(sizeof(int));
         *count = 1;
         cache_insert(block_list, addr, addr_len, count);
@@ -91,12 +120,11 @@ check_block_list(char *addr, int err_level)
 static void
 parse_addr_cidr(const char *str, char *host, int *cidr)
 {
-    int ret = -1, n = 0;
+    int ret = -1;
     char *pch;
 
     pch = strchr(str, '/');
     while (pch != NULL) {
-        n++;
         ret = pch - str;
         pch = strchr(pch + 1, '/');
     }
@@ -116,7 +144,7 @@ trimwhitespace(char *str)
     char *end;
 
     // Trim leading space
-    while (isspace(*str))
+    while (isspace((unsigned char)*str))
         str++;
 
     if (*str == 0)   // All spaces?
@@ -124,7 +152,7 @@ trimwhitespace(char *str)
 
     // Trim trailing space
     end = str + strlen(str) - 1;
-    while (end > str && isspace(*end))
+    while (end > str && isspace((unsigned char)*end))
         end--;
 
     // Write new null terminator
@@ -163,19 +191,35 @@ init_acl(const char *path)
     char buf[257];
     while (!feof(f))
         if (fgets(buf, 256, f)) {
+            // Discards the whole line if longer than 255 characters
+            int long_line = 0;  // 1: Long  2: Error
+            while ((strlen(buf) == 255) && (buf[254] != '\n')) {
+                long_line = 1;
+                LOGE("Discarding long ACL content: %s", buf);
+                if (fgets(buf, 256, f) == NULL) {
+                    long_line = 2;
+                    break;
+                }
+            }
+            if (long_line) {
+                if (long_line == 1) {
+                    LOGE("Discarding long ACL content: %s", buf);
+                }
+                continue;
+            }
+
             // Trim the newline
             int len = strlen(buf);
             if (len > 0 && buf[len - 1] == '\n') {
                 buf[len - 1] = '\0';
             }
 
-            char *line = trimwhitespace(buf);
-
-            // Skip comments
-            if (line[0] == '#') {
-                continue;
+            char *comment = strchr(buf, '#');
+            if (comment) {
+                *comment = '\0';
             }
 
+            char *line = trimwhitespace(buf);
             if (strlen(line) == 0) {
                 continue;
             }

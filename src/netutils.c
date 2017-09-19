@@ -1,7 +1,7 @@
 /*
  * netutils.c - Network utilities
  *
- * Copyright (C) 2013 - 2016, Max Lv <max.c.lv@gmail.com>
+ * Copyright (C) 2013 - 2017, Max Lv <max.c.lv@gmail.com>
  *
  * This file is part of the shadowsocks-libev.
  *
@@ -23,21 +23,15 @@
 #include <math.h>
 
 #include <libcork/core.h>
-#include <udns.h>
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
 
-#ifdef __MINGW32__
-#include "win32.h"
-#define sleep(n) Sleep(1000 * (n))
-#else
-#include <sys/socket.h>
+#include <arpa/inet.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <unistd.h>
-#endif
 
 #if defined(HAVE_SYS_IOCTL_H) && defined(HAVE_NET_IF_H) && defined(__linux__)
 #include <net/if.h>
@@ -84,7 +78,7 @@ int
 setinterface(int socket_fd, const char *interface_name)
 {
     struct ifreq interface;
-    memset(&interface, 0, sizeof(interface));
+    memset(&interface, 0, sizeof(struct ifreq));
     strncpy(interface.ifr_name, interface_name, IFNAMSIZ);
     int res = setsockopt(socket_fd, SOL_SOCKET, SO_BINDTODEVICE, &interface,
                          sizeof(struct ifreq));
@@ -99,16 +93,16 @@ bind_to_address(int socket_fd, const char *host)
     if (host != NULL) {
         struct cork_ip ip;
         struct sockaddr_storage storage;
-        memset(&storage, 0, sizeof(storage));
+        memset(&storage, 0, sizeof(struct sockaddr_storage));
         if (cork_ip_init(&ip, host) != -1) {
             if (ip.version == 4) {
                 struct sockaddr_in *addr = (struct sockaddr_in *)&storage;
-                dns_pton(AF_INET, host, &addr->sin_addr);
+                inet_pton(AF_INET, host, &addr->sin_addr);
                 addr->sin_family = AF_INET;
                 return bind(socket_fd, (struct sockaddr *)addr, sizeof(struct sockaddr_in));
             } else if (ip.version == 6) {
                 struct sockaddr_in6 *addr = (struct sockaddr_in6 *)&storage;
-                dns_pton(AF_INET6, host, &addr->sin6_addr);
+                inet_pton(AF_INET6, host, &addr->sin6_addr);
                 addr->sin6_family = AF_INET6;
                 return bind(socket_fd, (struct sockaddr *)addr, sizeof(struct sockaddr_in6));
             }
@@ -118,21 +112,23 @@ bind_to_address(int socket_fd, const char *host)
 }
 
 ssize_t
-get_sockaddr(char *host, char *port, struct sockaddr_storage *storage, int block)
+get_sockaddr(char *host, char *port,
+             struct sockaddr_storage *storage, int block,
+             int ipv6first)
 {
     struct cork_ip ip;
     if (cork_ip_init(&ip, host) != -1) {
         if (ip.version == 4) {
             struct sockaddr_in *addr = (struct sockaddr_in *)storage;
             addr->sin_family = AF_INET;
-            dns_pton(AF_INET, host, &(addr->sin_addr));
+            inet_pton(AF_INET, host, &(addr->sin_addr));
             if (port != NULL) {
                 addr->sin_port = htons(atoi(port));
             }
         } else if (ip.version == 6) {
             struct sockaddr_in6 *addr = (struct sockaddr_in6 *)storage;
             addr->sin6_family = AF_INET6;
-            dns_pton(AF_INET6, host, &(addr->sin6_addr));
+            inet_pton(AF_INET6, host, &(addr->sin6_addr));
             if (port != NULL) {
                 addr->sin6_port = htons(atoi(port));
             }
@@ -167,18 +163,24 @@ get_sockaddr(char *host, char *port, struct sockaddr_storage *storage, int block
             return -1;
         }
 
+        int prefer_af = ipv6first ? AF_INET6 : AF_INET;
         for (rp = result; rp != NULL; rp = rp->ai_next)
-            if (rp->ai_family == AF_INET) {
-                memcpy(storage, rp->ai_addr, sizeof(struct sockaddr_in));
+            if (rp->ai_family == prefer_af) {
+                if (rp->ai_family == AF_INET)
+                    memcpy(storage, rp->ai_addr, sizeof(struct sockaddr_in));
+                else if (rp->ai_family == AF_INET6)
+                    memcpy(storage, rp->ai_addr, sizeof(struct sockaddr_in6));
                 break;
             }
 
         if (rp == NULL) {
-            for (rp = result; rp != NULL; rp = rp->ai_next)
-                if (rp->ai_family == AF_INET6) {
+            for (rp = result; rp != NULL; rp = rp->ai_next) {
+                if (rp->ai_family == AF_INET)
+                    memcpy(storage, rp->ai_addr, sizeof(struct sockaddr_in));
+                else if (rp->ai_family == AF_INET6)
                     memcpy(storage, rp->ai_addr, sizeof(struct sockaddr_in6));
-                    break;
-                }
+                break;
+            }
         }
 
         if (rp == NULL) {
@@ -299,4 +301,3 @@ validate_hostname(const char *hostname, const int hostname_len)
 
     return 1;
 }
-

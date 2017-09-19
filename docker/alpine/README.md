@@ -18,7 +18,7 @@ $ docker --version
 ## Build docker image
 
 ```bash
-$ curl -sSL https://github.com/shadowsocks/shadowsocks-libev/raw/master/docker/alpine/Dockerfile | docker build -t shadowsocks-libev .
+$ curl -sSL https://github.com/shadowsocks/shadowsocks-libev/raw/master/docker/alpine/Dockerfile | docker build -t shadowsocks-libev -
 $ docker images
 ```
 
@@ -32,6 +32,7 @@ $ docker ps
 ```
 
 > :warning: Click [here][6] to generate a strong password to protect your server.
+> You can use `ARGS` environment variable to pass additional arguments
 
 ## Use docker-compose to manage (optional)
 
